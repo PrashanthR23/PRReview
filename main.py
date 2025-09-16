@@ -1,47 +1,24 @@
-"""
-PR Reviewer app
-Single-file Flask app that provides a minimal frontend to submit a public GitHub Pull Request URL,
-calls OpenAI to review the PR, posts review comments and labels the PR using a GitHub token.
 
-Environment variables expected :
-  - GITHUB_TOKEN : Personal access token with `repo` scope (for public repos this should work)
-  - OPENAI_API_KEY : OpenAI API key (used by `openai` Python package)
 
-Notes & limitations:
-  - This is a minimal, opinionated starter. It posts a single review comment on the PR conversation
-    and adds labels. It does not create inline file comments (those require file path + position mapping).
-  - The app fetches up to 5 changed files and truncates each file to avoid huge prompts.
-  - You may need to switch the OpenAI model name depending on your account. See the comment in `call_openai_review`.
-
-Usage:
-  pip install -r requirements.txt 
-  export GITHUB_TOKEN="ghp_..."
-  export OPENAI_API_KEY="sk-..."
-  python pr_reviewer_app.py
-
-Open http://127.0.0.1:5000 in your browser.
-"""
-
-from flask import Flask, render_template, request, render_template_string, jsonify
+from flask import Flask, render_template, request, jsonify
 import os
 import requests
-import openai
 import json
 import re
-import textwrap
+
+from openai import OpenAI
 
 app = Flask(__name__)
 
 # Configuration
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
-if OPENAI_KEY:
-    openai.api_key = OPENAI_KEY
 
-
+client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
 # Helpers
 PR_URL_REGEX = re.compile(r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)")
+
 
 def parse_pr_url(url):
     m = PR_URL_REGEX.search(url.strip())
@@ -83,7 +60,12 @@ def fetch_pr_and_files(owner, repo, pr_number, token=None, max_files=5, max_char
             file_contents = '<<failed to fetch file contents>>'
         if len(file_contents) > max_chars_per_file:
             file_contents = file_contents[:max_chars_per_file] + '\n\n...TRUNCATED...'
-        selected.append({'filename': filename, 'status': f.get('status'), 'changes': f.get('changes'), 'contents': file_contents})
+        selected.append({
+            'filename': filename,
+            'status': f.get('status'),
+            'changes': f.get('changes'),
+            'contents': file_contents
+        })
     return pr, selected
 
 
@@ -97,7 +79,25 @@ def build_prompt(pr, files):
     prompt = []
     prompt.append({
         'role': 'system',
-        'content': 'You are a senior software engineer and security expert. Produce a clear, concise review of the pull request. Return output as JSON with keys: summary (short), comments (list of {path,comment}), labels (list of strings). Do not add any extra text outside the JSON.'
+        'content': (
+            "You are a senior software engineer and security expert. "
+            "Produce a clear, concise review of the pull request. "
+            "Return output strictly as JSON with keys: \n"
+            "  - summary (short text summary of the PR quality),\n"
+            "  - comments (list of objects with {path, block, issue, corrected_code, comment}),\n"
+            "  - labels (list of strings).\n\n"
+            "For each comment:\n"
+            "  - path: filename where the issue occurs.\n"
+            "  - block: the specific code block (few lines) where the issue exists.\n"
+            "  - issue: concise description of the problem.\n"
+            "  - corrected_code: corrected code snippet that fixes the issue.\n"
+            "  - comment: a clear explanation of the issue and how the fix resolves it.\n\n"
+            "Important rules:\n"
+            "- Output ONLY valid JSON (no extra text).\n"
+            "- Maximum 6 comments.\n"
+            "- Labels must be chosen from: security-issue, code-logic-issue, build-issue, "
+            "docs-issue, style-issue, perf-issue, other."
+        )
     })
 
     user_text = f"""
@@ -111,17 +111,16 @@ Description:
 Changed files (up to {len(files)}):
 """
     for f in files:
-        user_text += f"\n---\nFile: {f['filename']} (status: {f['status']}, changes: {f['changes']})\n{f['contents']}\n"
+        user_text += (
+            f"\n---\nFile: {f['filename']} (status: {f['status']}, changes: {f['changes']})\n"
+            f"{f['contents']}\n"
+        )
 
     user_text += "\nInstructions:\n- Review for correctness, code logic, security issues, architecture/design concerns, and potential build/test problems.\n- Produce up to 6 actionable comments.\n- Suggest labels chosen from: security-issue, code-logic-issue, build-issue, docs-issue, style-issue, perf-issue, other.\n- Output ONLY valid JSON.\n"
 
     prompt.append({'role': 'user', 'content': user_text})
     return prompt
 
-
-from openai import OpenAI
-
-client = OpenAI(api_key=OPENAI_KEY)
 
 def call_openai_review(prompt_messages, model="gpt-4o-mini"):
     if not OPENAI_KEY:
@@ -130,55 +129,70 @@ def call_openai_review(prompt_messages, model="gpt-4o-mini"):
     resp = client.chat.completions.create(
         model=model,
         messages=prompt_messages,
-        max_tokens=1000,
+        max_tokens=1200,
         temperature=0.0,
     )
     return resp.choices[0].message.content
 
+
 def parse_model_json_safe(text):
-    # Models sometimes wrap JSON in ``` or extraneous text. Try to extract the first JSON object.
-    # Find first occurrence of '{' and last '}' and attempt to parse.
     try:
         start = text.index('{')
         end = text.rfind('}')
         json_text = text[start:end+1]
         return json.loads(json_text)
-    except Exception as e:
-        # fallback: try direct json.loads
+    except Exception:
         try:
             return json.loads(text)
         except Exception:
-            # As a last resort return a best-effort structure
             return {'summary': text.strip(), 'comments': [], 'labels': []}
 
 
 def post_review_and_labels(owner, repo, pr_number, token, review_json):
-    # Create a PR review (single comment) summarizing findings
     summary = review_json.get('summary') or ''
     comments = review_json.get('comments') or []
 
-    body = f"Automated review summary:\n\n{summary}\n\nDetailed comments:\n"
+    body = f"### 🤖 Automated Review Summary\n\n{summary}\n\n### 📝 Detailed Comments:\n"
     for c in comments:
         path = c.get('path', '<unknown>')
-        comment = c.get('comment') or c.get('message') or ''
-        body += f"\n- {path}: {comment}\n"
+        block = c.get('block', '')
+        issue = c.get('issue', '')
+        corrected = c.get('corrected_code', '')
+        explanation = c.get('comment', '')
 
-    # Post the review on the PR as a review event
+        body += f"\n**File:** `{path}`\n"
+        if issue:
+            body += f"- **Issue:** {issue}\n"
+        if block:
+            body += f"- **Problematic Code:**\n```python\n{block}\n```\n"
+        if corrected:
+            body += f"- **Suggested Fix:**\n```python\n{corrected}\n```\n"
+        if explanation:
+            body += f"- **Explanation:** {explanation}\n"
+
     review_payload = {
         'body': body,
         'event': 'COMMENT'
     }
-    review_resp = github_post(f'/repos/{owner}/{repo}/pulls/{pr_number}/reviews', review_payload, token=token)
+    review_resp = github_post(
+        f'/repos/{owner}/{repo}/pulls/{pr_number}/reviews',
+        review_payload,
+        token=token
+    )
 
-    # Add labels on the issue associated with the PR
     labels = review_json.get('labels') or []
-    # sanitize labels to known mapping
-    allowed = {'security-issue','code-logic-issue','build-issue','docs-issue','style-issue','perf-issue','other'}
+    allowed = {
+        'security-issue', 'code-logic-issue', 'build-issue',
+        'docs-issue', 'style-issue', 'perf-issue', 'other'
+    }
     to_add = [l for l in labels if l in allowed]
+    labels_resp = None
     if to_add:
-        labels_resp = github_post(f'/repos/{owner}/{repo}/issues/{pr_number}/labels', {'labels': to_add}, token=token)
-    else:
-        labels_resp = None
+        labels_resp = github_post(
+            f'/repos/{owner}/{repo}/issues/{pr_number}/labels',
+            {'labels': to_add},
+            token=token
+        )
 
     return {'review': review_resp, 'labels': labels_resp}
 
@@ -195,13 +209,19 @@ def review():
     token = request.form.get('token') or GITHUB_TOKEN
     if not pr_url:
         return jsonify({'error': 'pr_url is required'}), 400
+
     parsed = parse_pr_url(pr_url)
     if not parsed:
-        return jsonify({'error': 'Invalid GitHub PR URL. Expected: https://github.com/owner/repo/pull/123'}), 400
+        return jsonify({
+            'error': 'Invalid GitHub PR URL. Expected: https://github.com/owner/repo/pull/123'
+        }), 400
+
     owner, repo, pr_number = parsed
 
     if not token:
-        return jsonify({'error': 'No GitHub token provided. Set GITHUB_TOKEN env var or provide token in form.'}), 400
+        return jsonify({
+            'error': 'No GitHub token provided. Set GITHUB_TOKEN env var or provide token in form.'
+        }), 400
 
     try:
         pr, files = fetch_pr_and_files(owner, repo, pr_number, token=token)
@@ -219,7 +239,11 @@ def review():
     try:
         gh_resp = post_review_and_labels(owner, repo, pr_number, token, review_json)
     except requests.HTTPError as e:
-        return jsonify({'error': 'Failed to post review/labels to GitHub', 'details': str(e), 'model_output': review_json}), 500
+        return jsonify({
+            'error': 'Failed to post review/labels to GitHub',
+            'details': str(e),
+            'model_output': review_json
+        }), 500
 
     return jsonify({'status': 'success', 'model_output': review_json, 'github_response': gh_resp})
 
