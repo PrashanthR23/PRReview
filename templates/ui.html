@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PR Reviewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #f5f7fa;
+      --card-bg: #ffffff;
+      --primary: #2563eb;
+      --primary-hover: #1e40af;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --radius: 12px;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      width: 100%;
+      max-width: 700px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.06);
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    label {
+      font-weight: 600;
+      margin-bottom: 0.3rem;
+      display: block;
+    }
+
+    input {
+      width: 100%;
+      padding: 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(37,99,235,0.2);
+    }
+
+    button {
+      background: var(--primary);
+      color: white;
+      font-size: 1rem;
+      padding: 0.8rem 1.5rem;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: var(--primary-hover);
+    }
+
+    #result {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      border-radius: var(--radius);
+      background: #1e293b;
+      color: #e2e8f0;
+      font-family: monospace;
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Pull Request Reviewer</h2>
+    <form id="prForm">
+      <label for="pr_url">Public GitHub PR URL:</label>
+      <input type="url" id="pr_url" name="pr_url" required placeholder="https://github.com/owner/repo/pull/123">
+
+      
+
+      <button type="submit">🔍 Review PR</button>
+    </form>
+    <pre id="result"></pre>
+  </div>
+
+  <script>
+    const form = document.getElementById('prForm');
+    const result = document.getElementById('result');
+    const button = form.querySelector("button");
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      button.textContent = "⏳ Reviewing...";
+      form.classList.add("loading");
+      result.textContent = '';
+
+      try {
+        const data = new FormData(form);
+        const resp = await fetch('/review', { method: 'POST', body: data });
+        const js = await resp.json();
+
+        if (resp.ok) {
+          result.textContent = JSON.stringify(js, null, 2);
+        } else {
+          result.textContent = "❌ Error:\n" + JSON.stringify(js, null, 2);
+        }
+      } catch (err) {
+        result.textContent = "⚠️ Network error: " + err.message;
+      } finally {
+        button.textContent = "🔍 Review PR";
+        form.classList.remove("loading");
+      }
+    });
+  </script>
+</body>
+</html>
