@@ -22,7 +22,7 @@ Usage:
 Open http://127.0.0.1:5000 in your browser.
 """
 
-from flask import Flask, request, render_template_string, jsonify
+from flask import Flask, render_template, request, render_template_string, jsonify
 import os
 import requests
 import openai
@@ -38,36 +38,7 @@ OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 if OPENAI_KEY:
     openai.api_key = OPENAI_KEY
 
-# Minimal HTML front-end template
-HTML = """
-<!doctype html>
-<title>PR Reviewer</title>
-<h2>Pull Request Reviewer</h2>
-<form id="prForm" method="post" action="/review">
-  <label for="pr_url">Public GitHub PR URL:</label><br>
-  <input type="url" id="pr_url" name="pr_url" size="80" required placeholder="https://github.com/owner/repo/pull/123"><br><br>
-  <label for="token">(optional) GitHub token (or set GITHUB_TOKEN env var):</label><br>
-  <input type="password" id="token" name="token" size="80" placeholder="ghp_xxx"><br><br>
-  <button type="submit">Review PR</button>
-</form>
-<pre id="result"></pre>
-<script>
-const form = document.getElementById('prForm');
-const result = document.getElementById('result');
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  result.textContent = 'Sending...';
-  const data = new FormData(form);
-  const resp = await fetch('/review', { method: 'POST', body: data });
-  const js = await resp.json();
-  if (resp.ok) {
-    result.textContent = JSON.stringify(js, null, 2);
-  } else {
-    result.textContent = 'Error: ' + JSON.stringify(js, null, 2);
-  }
-});
-</script>
-"""
+
 
 # Helpers
 PR_URL_REGEX = re.compile(r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>\d+)")
@@ -215,7 +186,7 @@ def post_review_and_labels(owner, repo, pr_number, token, review_json):
 # Routes
 @app.route('/')
 def index():
-    return render_template_string(HTML)
+    return render_template("ui.html")
 
 
 @app.route('/review', methods=['POST'])
