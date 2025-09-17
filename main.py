@@ -97,6 +97,7 @@ def build_prompt(pr, files):
             "- Maximum 6 comments.\n"
             "- Labels must be chosen from: security-issue, code-logic-issue, build-issue, "
             "docs-issue, style-issue, perf-issue, other."
+            #test
         )
     })
 
